@@ -1,7 +1,8 @@
 CXX=g++
 CXXFLAGS=-std=c++17 -O2 -Wall -Wextra -pthread
 
-SRCS = src/main.cpp src/ready_buffer.cpp src/scheduler.cpp
+SRCS = src/main.cpp src/ready_buffer.cpp src/scheduler.cpp src/bankers.cpp
+
 
 OBJS = $(SRCS:.cpp=.o)
 

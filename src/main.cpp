@@ -1,45 +1,43 @@
 #include <iostream>
-#include <vector>
+#include "bankers.hpp"
 #include "process.hpp"
-#include "scheduler.hpp"
 
-static void print_result(const ScheduleResult& r) {
-    std::cout << "\nGantt Chart:\n";
-    for (auto& s : r.gantt) {
-        std::cout << "| P" << s.pid << " (" << s.start << "-" << s.end << ") ";
+static void print_vec(const std::vector<int>& v) {
+    std::cout << "[";
+    for (size_t i=0;i<v.size();i++) {
+        std::cout << v[i] << (i+1==v.size()? "" : ",");
     }
-    std::cout << "|\n";
-
-    std::cout << "\nPID  WT  TAT\n";
-    for (auto& [pid, wt] : r.waiting) {
-        std::cout << pid << "    " << wt << "   " << r.turnaround.at(pid) << "\n";
-    }
-
-    std::cout << "\nAverage WT=" << r.avg_waiting
-              << "  Average TAT=" << r.avg_turnaround << "\n";
+    std::cout << "]";
 }
 
 int main() {
-    // Try 5 processes => Priority
-    std::vector<Process> procs1 = {
-        {1,0,6,2,{1,0,1}},
-        {2,0,2,1,{0,1,0}},
-        {3,0,8,4,{1,1,0}},
-        {4,0,3,3,{0,0,1}},
-        {5,0,4,2,{1,0,0}},
-    };
+    // Example: 3 resource types
+    Bankers b({3, 3, 2});
 
-    std::cout << "Case 1: size=5 => Priority\n";
-    auto r1 = Scheduler::run(procs1, 4);
-    print_result(r1);
+    Process p1(1,0,5,2,{1,1,0});
+    Process p2(2,0,3,3,{2,1,1});
+    Process p3(3,0,4,1,{1,1,1});
 
-    // Try 6 processes => RR(q=4)
-    std::vector<Process> procs2 = procs1;
-    procs2.push_back({6,0,5,5,{0,1,1}});
+    auto s1 = b.request_resources(p1.pid, p1.max_need);
+    std::cout << "P1 request " << (s1 ? "GRANTED" : "BLOCKED") << " avail="; print_vec(b.available()); std::cout << "\n";
 
-    std::cout << "\nCase 2: size=6 => Round Robin (q=4)\n";
-    auto r2 = Scheduler::run(procs2, 4);
-    print_result(r2);
+    auto s2 = b.request_resources(p2.pid, p2.max_need);
+    std::cout << "P2 request " << (s2 ? "GRANTED" : "BLOCKED") << " avail="; print_vec(b.available()); std::cout << "\n";
+
+    auto s3 = b.request_resources(p3.pid, p3.max_need);
+    std::cout << "P3 request " << (s3 ? "GRANTED" : "BLOCKED") << " avail="; print_vec(b.available()); std::cout << "\n";
+
+    if (s3) {
+        std::cout << "Safe sequence now: ";
+        for (int pid : *s3) std::cout << pid << " ";
+        std::cout << "\n";
+    } else {
+        std::cout << "No safe sequence if granting P3 right now.\n";
+    }
+
+    // simulate finishing P1 and releasing
+    b.release_all(p1.pid);
+    std::cout << "After P1 finishes, avail="; print_vec(b.available()); std::cout << "\n";
 
     return 0;
 }
