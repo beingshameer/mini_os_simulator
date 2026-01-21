@@ -2,7 +2,7 @@
 #include <iostream>
 #include <chrono>
 
-static Process make_sentinel() {
+Process Simulator::make_sentinel() {
     return Process{-1, 0, 0, 0, {}};
 }
 
@@ -15,15 +15,45 @@ Simulator::Simulator(int buffer_size,
       producers_count_(producers_count),
       processes_per_producer_(processes_per_producer) {}
 
+void Simulator::add_process(const Process& p) {
+    std::lock_guard<std::mutex> lock(lists_mtx_);
+    manual_pool_.push_back(p);
+    std::cout << "[Menu] Added process PID=" << p.pid << "\n";
+}
+
+void Simulator::display_state() const {
+    std::lock_guard<std::mutex> lock(lists_mtx_);
+
+    std::cout << "\n--- Current State ---\n";
+    std::cout << "Available: ";
+    for (int x : banker_.available()) std::cout << x << " ";
+    std::cout << "\n";
+
+    std::cout << "Manual pool: ";
+    if (manual_pool_.empty()) std::cout << "(none)";
+    for (auto &p : manual_pool_) std::cout << "P" << p.pid << " ";
+    std::cout << "\n";
+
+    std::cout << "Ready list: ";
+    if (ready_list_.empty()) std::cout << "(none)";
+    for (auto &p : ready_list_) std::cout << "P" << p.pid << " ";
+    std::cout << "\n";
+
+    std::cout << "Blocked list: ";
+    if (blocked_list_.empty()) std::cout << "(none)";
+    for (auto &p : blocked_list_) std::cout << "P" << p.pid << " ";
+    std::cout << "\n";
+    std::cout << "---------------------\n";
+}
+
 void Simulator::producer_thread(int id) {
     for (int i = 0; i < processes_per_producer_; i++) {
         int pid = next_pid_.fetch_add(1);
 
-        // Example process generation (later menu will allow manual input)
         int burst = (pid % 7) + 1;
         int pr = (pid % 5) + 1;
 
-        // same size as resource types
+        // Must match number of resource types (we use 3 in main)
         std::vector<int> need = { pid % 3, (pid + 1) % 3, (pid + 2) % 3 };
 
         Process p(pid, 0, burst, pr, need);
@@ -36,8 +66,31 @@ void Simulator::producer_thread(int id) {
     }
 }
 
+void Simulator::consumer_dispatcher() {
+    while (true) {
+        Process p = buffer_.pop();
+        if (p.pid == -1) {
+            std::cout << "[Consumer] got sentinel, stopping intake.\n";
+            break;
+        }
+
+        auto safe = banker_.request_resources(p.pid, p.max_need);
+
+        std::lock_guard<std::mutex> lock(lists_mtx_);
+        if (safe) {
+            std::cout << "[Consumer] PID=" << p.pid << " SAFE -> ready. SafeSeq: ";
+            for (int x : *safe) std::cout << x << " ";
+            std::cout << "\n";
+            ready_list_.push_back(p);
+        } else {
+            std::cout << "[Consumer] PID=" << p.pid << " UNSAFE -> blocked.\n";
+            blocked_list_.push_back(p);
+        }
+    }
+}
+
 void Simulator::try_unblock() {
-    // Try to move blocked -> ready if now safe
+    // assumes lists_mtx_ already held by caller
     std::vector<Process> still_blocked;
 
     for (auto &p : blocked_list_) {
@@ -55,29 +108,6 @@ void Simulator::try_unblock() {
     blocked_list_ = std::move(still_blocked);
 }
 
-void Simulator::consumer_dispatcher() {
-    while (true) {
-        Process p = buffer_.pop();
-        if (p.pid == -1) {
-            std::cout << "[Consumer] got sentinel, stopping intake.\n";
-            break;
-        }
-
-        auto safe = banker_.request_resources(p.pid, p.max_need);
-        std::lock_guard<std::mutex> lock(lists_mtx_);
-
-        if (safe) {
-            std::cout << "[Consumer] PID=" << p.pid << " SAFE -> ready. SafeSeq: ";
-            for (int x : *safe) std::cout << x << " ";
-            std::cout << "\n";
-            ready_list_.push_back(p);
-        } else {
-            std::cout << "[Consumer] PID=" << p.pid << " UNSAFE -> blocked.\n";
-            blocked_list_.push_back(p);
-        }
-    }
-}
-
 void Simulator::print_blocked() const {
     std::cout << "\nBlocked processes: ";
     if (blocked_list_.empty()) {
@@ -89,26 +119,50 @@ void Simulator::print_blocked() const {
 }
 
 void Simulator::start() {
+    // reset lists each run (important for menu-based repeated runs)
+    {
+        std::lock_guard<std::mutex> lock(lists_mtx_);
+        ready_list_.clear();
+        blocked_list_.clear();
+    }
+
     std::cout << "\n=== Simulation Start ===\n";
     std::cout << "Initial Available Resources: ";
-    for (auto x : banker_.available()) std::cout << x << " ";
+    for (int x : banker_.available()) std::cout << x << " ";
     std::cout << "\n";
 
-    // Start consumer
-    std::thread consumer(&Simulator::consumer_dispatcher, this);
+    // Decide mode: manual or threaded
+    std::vector<Process> manual_copy;
+    {
+        std::lock_guard<std::mutex> lock(lists_mtx_);
+        manual_copy = manual_pool_;
+        manual_pool_.clear();
+    }
 
-    // Start producers
-    std::vector<std::thread> producers;
-    for (int i = 0; i < producers_count_; i++)
-        producers.emplace_back(&Simulator::producer_thread, this, i + 1);
+    if (!manual_copy.empty()) {
+        std::cout << "[Simulation] Using manual processes (" << manual_copy.size() << ")\n";
 
-    for (auto &t : producers) t.join();
+        // Push manual processes then sentinel
+        for (auto &p : manual_copy) buffer_.push(p);
+        buffer_.push(make_sentinel());
 
-    // stop consumer
-    buffer_.push(make_sentinel());
-    consumer.join();
+        // Run dispatcher in same thread
+        consumer_dispatcher();
+    } else {
+        // Threaded mode (2 producers + 1 consumer) requirement
+        std::thread consumer(&Simulator::consumer_dispatcher, this);
 
-    // --- Scheduling phase ---
+        std::vector<std::thread> producers;
+        for (int i = 0; i < producers_count_; i++)
+            producers.emplace_back(&Simulator::producer_thread, this, i + 1);
+
+        for (auto &t : producers) t.join();
+
+        buffer_.push(make_sentinel());
+        consumer.join();
+    }
+
+    // ---- Scheduling + release + unblock ----
     {
         std::lock_guard<std::mutex> lock(lists_mtx_);
 
@@ -130,13 +184,14 @@ void Simulator::start() {
             std::cout << pid << "   " << result.waiting.at(pid)
                       << "   " << result.turnaround.at(pid) << "\n";
         }
+
         std::cout << "\nAverage WT=" << result.avg_waiting
                   << "  Average TAT=" << result.avg_turnaround << "\n";
 
-        // Release resources for all finished processes
+        // Release resources for finished processes
         for (auto &p : ready_list_) banker_.release_all(p.pid);
 
-        // after release, try unblock
+        // try to unblock after resources are released
         try_unblock();
         print_blocked();
     }

@@ -7,6 +7,7 @@
 #include "ready_buffer.hpp"
 #include "bankers.hpp"
 #include "scheduler.hpp"
+#include "process.hpp"
 
 class Simulator {
 public:
@@ -15,7 +16,12 @@ public:
               int processes_per_producer,
               std::vector<int> initial_available);
 
-    void start();   // runs full simulation once
+    // Runs one full simulation cycle
+    void start();
+
+    // Menu actions
+    void add_process(const Process& p);
+    void display_state() const;
 
 private:
     ReadyBuffer buffer_;
@@ -26,14 +32,25 @@ private:
 
     std::atomic<int> next_pid_{1};
 
+    // Lists for integration
     std::vector<Process> ready_list_;
     std::vector<Process> blocked_list_;
 
-    std::mutex lists_mtx_;
+    // Processes added via menu before "Start Simulation"
+    std::vector<Process> manual_pool_;
 
+    // Must be mutable because display_state() is const but needs locking
+    mutable std::mutex lists_mtx_;
+
+    // Thread functions
     void producer_thread(int id);
     void consumer_dispatcher();
 
-    void try_unblock(); // retry blocked processes when resources released
+    // Blocked handling
+    void try_unblock();
     void print_blocked() const;
+
+    // Helpers
+    static Process make_sentinel();
 };
+
