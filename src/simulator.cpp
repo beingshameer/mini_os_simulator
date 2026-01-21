@@ -1,6 +1,7 @@
 #include "simulator.hpp"
 #include <iostream>
 #include <chrono>
+#include <algorithm> // for sort
 
 Process Simulator::make_sentinel() {
     return Process{-1, 0, 0, 0, {}};
@@ -53,13 +54,18 @@ void Simulator::producer_thread(int id) {
         int burst = (pid % 7) + 1;
         int pr = (pid % 5) + 1;
 
+        // arrival time now matters
+        int at = i;
+
         // Must match number of resource types (we use 3 in main)
         std::vector<int> need = { pid % 3, (pid + 1) % 3, (pid + 2) % 3 };
 
-        Process p(pid, 0, burst, pr, need);
+        Process p(pid, at, burst, pr, need);
 
         std::cout << "[Producer " << id << "] push PID=" << pid
-                  << " burst=" << burst << " pr=" << pr << "\n";
+                  << " at=" << at
+                  << " burst=" << burst
+                  << " pr=" << pr << "\n";
 
         buffer_.push(p);
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -178,9 +184,14 @@ void Simulator::start() {
         }
         std::cout << "|\n";
 
+        // PRINT WT/TAT IN SORTED PID ORDER (polish fix)
+        std::vector<int> pids;
+        pids.reserve(result.waiting.size());
+        for (auto &kv : result.waiting) pids.push_back(kv.first);
+        std::sort(pids.begin(), pids.end());
+
         std::cout << "\nPID  WT  TAT\n";
-        for (auto &kv : result.waiting) {
-            int pid = kv.first;
+        for (int pid : pids) {
             std::cout << pid << "   " << result.waiting.at(pid)
                       << "   " << result.turnaround.at(pid) << "\n";
         }
